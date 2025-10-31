@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# Poetry (keep poetry.lock for reproducible builds)
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+sync.log
+
+# State files
+sync_state.json
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+README.md
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Service files
+*.service
+
+sync_config.yaml
+.vscode

@@ -1,0 +1,42 @@
+services:
+  # PostgreSQL for reporting database
+  postgres:
+    image: postgres:16-alpine
+    container_name: reporting_postgres
+    environment:
+      POSTGRES_DB: reporting_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+    ports:
+      - "54322:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_postgres.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Eaglesoft Sync Service
+  sync:
+    platform: linux/amd64
+    image: eaglesoft_sync:latest
+    container_name: eaglesoft_sync
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SYBASE_PASSWORD: ${SYBASE_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_password}
+    volumes:
+      - ./sync_config.yaml:/app/sync_config.yaml:ro
+      - ./sync.log:/app/sync.log
+    networks:
+      - insuranceapp-dev_default
+
+networks:
+  insuranceapp-dev_default:
+    external: true
+volumes:
+  postgres_data:

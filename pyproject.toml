@@ -1,0 +1,40 @@
+[tool.poetry]
+name = "eaglesoft-sync"
+version = "1.0.0"
+description = "Sybase SQL Anywhere to PostgreSQL Data Sync Tool with support for multiple sync strategies"
+authors = ["James Russo"]
+readme = "README.md"
+packages = [{include = "sybase_postgres_sync.py"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+sqlanydb = ">=1.0.11"
+psycopg2-binary = ">=2.9.9"
+pyyaml = ">=6.0"
+python-dotenv = ">=1.0.0"
+pandas = ">=2.0.0"
+sqlalchemy = ">=2.0.0"
+click = ">=8.0.0"
+colorlog = ">=6.7.0"
+tqdm = ">=4.66.0"
+prometheus-client = ">=0.19.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+black = "^23.0.0"
+ruff = "^0.1.0"
+
+[tool.poetry.scripts]
+eaglesoft-sync = "sybase_postgres_sync:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

@@ -1,0 +1,213 @@
+# Sybase to PostgreSQL Sync Configuration
+
+source:
+  type: sybase
+  host: 10.10.0.15
+  port: 2638
+  username: halo3
+  password: ${SYBASE_PASSWORD}
+
+target:
+  type: postgresql
+  host: postgres
+  port: 5432
+  database: reporting_db
+  username: postgres
+  password: ${POSTGRES_PASSWORD}
+
+sync:
+  batch_size: 10000 # Records per batch
+  parallel_tables: 3 # Number of tables to sync in parallel
+
+# Table Definitions
+# Define each table once with its sync strategy and tags
+#
+# Sync Strategy Options:
+# - full: Complete table sync (truncate + reload all records)
+# - incremental: Sync based on a timestamp/date column (e.g., updated_at > last_sync_time)
+#     Requires: incremental_column to be specified
+# - incremental_pk: Sync based on primary key (only records where PK > last synced PK)
+# - cdc: Change Data Capture using rw_{tablename} tracking tables
+# - query_filter: Sync only records matching a custom filter query
+#
+# Tags: Used to group tables for different sync jobs (e.g., critical, reference, etc.)
+#
+tables:
+  # Critical tables with CDC tracking
+  - name: patient
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: cdc
+    tags: [critical, cdc]
+
+  - name: appointment
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: cdc
+    tags: [critical, cdc]
+
+  - name: transactions
+    source_schema: PPM
+    primary_key: tran_num # transactions is actually a view
+    target_schema: public
+    sync_strategy: cdc
+    tags: [critical, cdc, financial]
+
+  - name: treatment_plans
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: cdc
+    tags: [critical, cdc]
+
+  - name: treatment_plan_items
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: cdc
+    tags: [critical, cdc]
+
+  # Incremental tables
+  - name: bulk_payments
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: incremental_pk
+    tags: [incremental, financial]
+
+  - name: operatory_notes
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: incremental
+    incremental_column: freshness
+    tags: [incremental]
+
+  # Query-filtered tables
+  - name: patient_alerts
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: query_filter
+    filter_query: "SELECT patient_id, alert_id FROM PPM.patient_alerts WHERE patient_id IN (SELECT DISTINCT patient_id FROM PPM.appointment WHERE start_time BETWEEN DATEADD(day, -7, NOW()) AND DATEADD(day, 7, NOW()) AND patient_id IS NOT NULL)"
+    tags: [filtered]
+
+  # Reference/static tables (full sync)
+  - name: chairs
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: appt_types
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: provider
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: alert
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference]
+
+  - name: alert_account
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference]
+
+  - name: services
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: employer
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: standard_fee
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: standard_fee_fees
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: paytype
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: adjustment_type
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: service_type
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+# Job Configurations
+# Define different sync jobs for different schedules
+#
+# Available options for each job:
+# - include_strategies: List of strategies to include (e.g., [cdc, incremental])
+# - include_tags: List of tags to include (e.g., [critical, reference])
+# - include_tables: List of specific table names to include
+# - exclude_tables: List of table names to exclude
+# - override_strategy: Force ALL tables in this job to use a specific strategy
+# - overrides: Per-table overrides (takes precedence over override_strategy)
+#
+# If no filters specified, all tables are included by default
+#
+jobs:
+  # Quick sync - runs frequently throughout the day (e.g., every 30 minutes)
+  quick:
+    description: "Fast incremental sync for critical and changing data"
+    include_strategies: [cdc, incremental, incremental_pk, query_filter]
+
+  # Nightly sync - runs once per night
+  # Uses each table's configured strategy (efficient)
+  nightly:
+    description: "Nightly sync of all tables using their configured strategies"
+    # No filters = all tables included by default
+
+  # Full rebuild - runs weekly to ensure 100% consistency
+  # Forces ALL tables to truncate and reload (slow but thorough)
+  full_rebuild:
+    description: "Complete rebuild - truncate and reload ALL tables"
+    override_strategy: full # Forces all tables to use 'full' strategy
+
+  # Reference data only - runs weekly or when reference data changes
+  reference:
+    description: "Sync only static/reference tables"
+    include_tags: [reference, static]
+
+  # Critical only - for testing or emergency syncs
+  critical:
+    description: "Sync only critical patient and appointment data"
+    include_tags: [critical]
+
+  # Financial only - for accounting reports
+  financial:
+    description: "Sync only financial tables"
+    include_tags: [financial]
+
+logging:
+  level: INFO
+  file: sync.log
+  max_bytes: 10485760 # 10MB
+  backup_count: 5
