@@ -9,30 +9,30 @@ RUN ./setup -silent -I_accept_the_license_agreement
 WORKDIR /
 RUN rm -rf /opt/sqlanywhere-install
 
-# Install Poetry using pipx for isolation
-RUN pip install pipx && pipx ensurepath
-RUN pipx install poetry
 
-WORKDIR /usr/src/app
+RUN pip install pip --upgrade
+RUN pip install poetry
+
 ENV POETRY_VIRTUALENVS_CREATE=true \
     POETRY_VIRTUALENVS_IN_PROJECT=true
 
 # Copy project files and install dependencies
+WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 RUN poetry install --no-root --only main
 
-# Stage 2: Runtime Stage
+## Stage 2: Runtime Stage
 FROM python:3.12-slim-bookworm AS runtime
 
-# Set PATH to include the Poetry-managed virtual environment
+## Set PATH to include the Poetry-managed virtual environment
 ENV PATH="/app/.venv/bin:${PATH}"
 
 WORKDIR /app
-COPY --from=build /app ./
-RUN mkdir -p /app/logs
+COPY --from=build /app/.venv .venv
+COPY sybase_postgres_sync.py . 
 # Create a non-root user for security
 RUN useradd -U -M -d /nonexistent app
 USER app
-
+#
 # Run the sync by default
 CMD ["python", "sybase_postgres_sync.py"]
