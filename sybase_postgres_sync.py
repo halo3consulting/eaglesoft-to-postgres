@@ -1209,12 +1209,21 @@ class DataSync:
             update_cols = [f"{col} = EXCLUDED.{col}" for col in columns if col not in pk_columns]
 
             # execute_values requires %s as a template placeholder
-            query = f"""
-                INSERT INTO {target_schema}.{table_name} ({columns_str})
-                VALUES %s
-                ON CONFLICT ({primary_key}) DO UPDATE SET
-                {", ".join(update_cols)}
-            """
+            if update_cols:
+                # Has columns to update
+                query = f"""
+                    INSERT INTO {target_schema}.{table_name} ({columns_str})
+                    VALUES %s
+                    ON CONFLICT ({primary_key}) DO UPDATE SET
+                    {", ".join(update_cols)}
+                """
+            else:
+                # No columns to update (table only has PK columns), use DO NOTHING
+                query = f"""
+                    INSERT INTO {target_schema}.{table_name} ({columns_str})
+                    VALUES %s
+                    ON CONFLICT ({primary_key}) DO NOTHING
+                """
         else:
             # Simple insert
             query = f"""
