@@ -20,6 +20,7 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 import colorlog
 import json
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -73,6 +74,67 @@ class SyncState:
                 """
                 )
 
+                # Create sync_runs table for tracking overall sync runs
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self.state_schema}.sync_runs (
+                        sync_run_id UUID PRIMARY KEY,
+                        job_name VARCHAR(255),
+                        start_time TIMESTAMP NOT NULL,
+                        end_time TIMESTAMP,
+                        duration_seconds DECIMAL(10, 3),
+                        total_tables INTEGER,
+                        successful_tables INTEGER,
+                        failed_tables INTEGER,
+                        total_records BIGINT,
+                        status VARCHAR(50),
+                        error_message TEXT
+                    )
+                """
+                )
+
+                # Create index on sync_runs for time-based queries
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS idx_sync_runs_start_time
+                    ON {self.state_schema}.sync_runs (start_time DESC)
+                """
+                )
+
+                # Create sync_table_results table for per-table sync results
+                cursor.execute(
+                    f"""
+                    CREATE TABLE IF NOT EXISTS {self.state_schema}.sync_table_results (
+                        id SERIAL PRIMARY KEY,
+                        sync_run_id UUID NOT NULL REFERENCES {self.state_schema}.sync_runs(sync_run_id) ON DELETE CASCADE,
+                        table_name VARCHAR(255) NOT NULL,
+                        sync_strategy VARCHAR(50),
+                        start_time TIMESTAMP NOT NULL,
+                        end_time TIMESTAMP,
+                        duration_seconds DECIMAL(10, 3),
+                        records_synced BIGINT,
+                        status VARCHAR(50),
+                        error_message TEXT,
+                        stats JSONB
+                    )
+                """
+                )
+
+                # Create indexes for sync_table_results
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS idx_sync_table_results_run_id
+                    ON {self.state_schema}.sync_table_results (sync_run_id)
+                """
+                )
+
+                cursor.execute(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS idx_sync_table_results_table_name
+                    ON {self.state_schema}.sync_table_results (table_name, start_time DESC)
+                """
+                )
+
                 conn.commit()
         finally:
             conn.close()
@@ -121,6 +183,121 @@ class SyncState:
     def save_state(self):
         """No-op for backward compatibility - state is saved immediately in update_sync_value"""
         pass
+
+    def create_sync_run(self, job_name: Optional[str] = None) -> str:
+        """Create a new sync run record and return the sync_run_id"""
+        sync_run_id = str(uuid.uuid4())
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self.state_schema}.sync_runs
+                        (sync_run_id, job_name, start_time, status)
+                    VALUES (%s, %s, %s, %s)
+                """,
+                    (sync_run_id, job_name, datetime.now(), 'running'),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+        return sync_run_id
+
+    def complete_sync_run(
+        self,
+        sync_run_id: str,
+        total_tables: int,
+        successful_tables: int,
+        failed_tables: int,
+        total_records: int,
+        start_time: datetime,
+        error_message: Optional[str] = None
+    ):
+        """Update sync run with completion details"""
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+
+        # Determine overall status
+        if failed_tables == 0:
+            status = 'success'
+        elif successful_tables > 0:
+            status = 'partial'
+        else:
+            status = 'failed'
+
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE {self.state_schema}.sync_runs
+                    SET end_time = %s,
+                        duration_seconds = %s,
+                        total_tables = %s,
+                        successful_tables = %s,
+                        failed_tables = %s,
+                        total_records = %s,
+                        status = %s,
+                        error_message = %s
+                    WHERE sync_run_id = %s
+                """,
+                    (
+                        end_time,
+                        duration,
+                        total_tables,
+                        successful_tables,
+                        failed_tables,
+                        total_records,
+                        status,
+                        error_message,
+                        sync_run_id,
+                    ),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+
+    def record_table_result(
+        self,
+        sync_run_id: str,
+        table_name: str,
+        sync_strategy: str,
+        start_time: datetime,
+        end_time: datetime,
+        records_synced: int,
+        status: str,
+        error_message: Optional[str] = None,
+        stats: Optional[Dict] = None
+    ):
+        """Record the result of syncing a single table"""
+        duration = (end_time - start_time).total_seconds()
+
+        conn = self._get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self.state_schema}.sync_table_results
+                        (sync_run_id, table_name, sync_strategy, start_time, end_time,
+                         duration_seconds, records_synced, status, error_message, stats)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                    (
+                        sync_run_id,
+                        table_name,
+                        sync_strategy,
+                        start_time,
+                        end_time,
+                        duration,
+                        records_synced,
+                        status,
+                        error_message,
+                        json.dumps(stats) if stats else None,
+                    ),
+                )
+                conn.commit()
+        finally:
+            conn.close()
 
 
 class DataSync:
@@ -771,7 +948,7 @@ class DataSync:
 
         return type_mapping.get(sybase_lower, "TEXT")
 
-    def sync_table(self, table_config: Dict) -> Dict:
+    def sync_table(self, table_config: Dict, sync_run_id: Optional[str] = None) -> Dict:
         """Sync a single table"""
         table_name = table_config["name"]
         strategy = table_config.get("sync_strategy", "full")
@@ -809,7 +986,23 @@ class DataSync:
 
                 # Use CDC strategy if specified (and table exists)
                 if effective_strategy == "cdc":
-                    return self.sync_table_cdc(source_conn, target_conn, table_config)
+                    result = self.sync_table_cdc(source_conn, target_conn, table_config)
+
+                    # Record table result in history if sync_run_id is provided
+                    if sync_run_id:
+                        self.sync_state.record_table_result(
+                            sync_run_id=sync_run_id,
+                            table_name=table_name,
+                            sync_strategy=strategy,
+                            start_time=start_time,
+                            end_time=datetime.now(),
+                            records_synced=result.get("records", 0),
+                            status=result.get("status", "unknown"),
+                            error_message=result.get("error"),
+                            stats=result.get("stats"),
+                        )
+
+                    return result
 
                 # Build source query
                 source_query = self.build_source_query(source_conn, effective_config)
@@ -882,23 +1075,53 @@ class DataSync:
                 duration = (datetime.now() - start_time).total_seconds()
                 self.logger.info(f"Completed sync for {table_name}: {total_records} records in {duration:.2f}s")
 
-                return {
+                result = {
                     "table": table_name,
                     "records": total_records,
                     "status": "success",
                     "duration": duration,
                 }
 
+                # Record table result in history if sync_run_id is provided
+                if sync_run_id:
+                    self.sync_state.record_table_result(
+                        sync_run_id=sync_run_id,
+                        table_name=table_name,
+                        sync_strategy=strategy,
+                        start_time=start_time,
+                        end_time=datetime.now(),
+                        records_synced=total_records,
+                        status="success",
+                    )
+
+                return result
+
         except Exception as e:
             duration = (datetime.now() - start_time).total_seconds()
             self.logger.error(f"Error syncing table {table_name}: {str(e)}")
-            return {
+
+            result = {
                 "table": table_name,
                 "records": 0,
                 "status": "error",
                 "error": str(e),
                 "duration": duration,
             }
+
+            # Record table result in history if sync_run_id is provided
+            if sync_run_id:
+                self.sync_state.record_table_result(
+                    sync_run_id=sync_run_id,
+                    table_name=table_name,
+                    sync_strategy=strategy,
+                    start_time=start_time,
+                    end_time=datetime.now(),
+                    records_synced=0,
+                    status="error",
+                    error_message=str(e),
+                )
+
+            return result
 
     def sync_table_cdc(self, source_conn, target_conn, table_config: Dict) -> Dict:
         """Sync table using CDC (Change Data Capture) strategy via rw_ tables"""
@@ -1245,6 +1468,10 @@ class DataSync:
         self.logger.info("Starting data sync process")
         start_time = datetime.now()
 
+        # Create sync run record
+        sync_run_id = self.sync_state.create_sync_run(job_name)
+        self.logger.info(f"Created sync run with ID: {sync_run_id}")
+
         # Get tables for the specified job (or all tables if no job specified)
         tables = self.get_tables_for_job(job_name)
         max_workers = self.config["sync"].get("parallel_tables", 1)
@@ -1259,13 +1486,26 @@ class DataSync:
 
                 if not validation_result["valid"]:
                     validation_failed = True
+                    error_msg = "; ".join(validation_result["errors"])
                     self.stats["errors"].append(
                         {
                             "table": validation_result["table"],
                             "status": "validation_failed",
-                            "error": "; ".join(validation_result["errors"]),
+                            "error": error_msg,
                             "records": 0,
                         }
+                    )
+
+                    # Record validation failure in history
+                    self.sync_state.record_table_result(
+                        sync_run_id=sync_run_id,
+                        table_name=validation_result["table"],
+                        sync_strategy=table_config.get("sync_strategy", "unknown"),
+                        start_time=datetime.now(),
+                        end_time=datetime.now(),
+                        records_synced=0,
+                        status="validation_failed",
+                        error_message=error_msg,
                     )
 
         if validation_failed:
@@ -1277,13 +1517,24 @@ class DataSync:
             for error in self.stats["errors"]:
                 self.logger.error(f"  - {error['table']}: {error['error']}")
 
+            # Complete sync run with failure status
+            self.sync_state.complete_sync_run(
+                sync_run_id=sync_run_id,
+                total_tables=len(tables),
+                successful_tables=0,
+                failed_tables=len(self.stats["errors"]),
+                total_records=0,
+                start_time=start_time,
+                error_message=f"Validation failed for {len(self.stats['errors'])} table(s)",
+            )
+
             return self.stats
 
         self.logger.info("✓ All tables validated successfully. Starting sync...\n")
 
         # Run sync with thread pool
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(self.sync_table, table): table for table in tables}
+            futures = {executor.submit(self.sync_table, table, sync_run_id): table for table in tables}
 
             with tqdm(total=len(tables), desc="Syncing tables") as pbar:
                 for future in as_completed(futures):
@@ -1331,6 +1582,16 @@ Sync completed in {duration:.2f} seconds:
             for error in self.stats["errors"]:
                 self.logger.error(f"  - {error['table']}: {error.get('error', 'Unknown error')}")
 
+        # Complete sync run record
+        self.sync_state.complete_sync_run(
+            sync_run_id=sync_run_id,
+            total_tables=len(tables),
+            successful_tables=self.stats["tables_synced"],
+            failed_tables=len(self.stats["errors"]),
+            total_records=self.stats["total_records"],
+            start_time=start_time,
+        )
+
         return self.stats
 
 
@@ -1349,8 +1610,23 @@ def main(config, job, table):
             (t for t in syncer.config.get("tables", []) if t["name"] == table), None
         )
         if table_config:
-            result = syncer.sync_table(table_config)
+            # Create sync run for single table sync
+            start_time = datetime.now()
+            sync_run_id = syncer.sync_state.create_sync_run(f"single-table:{table}")
+
+            result = syncer.sync_table(table_config, sync_run_id)
             print(json.dumps(result, indent=2))
+
+            # Complete sync run
+            syncer.sync_state.complete_sync_run(
+                sync_run_id=sync_run_id,
+                total_tables=1,
+                successful_tables=1 if result["status"] == "success" else 0,
+                failed_tables=0 if result["status"] == "success" else 1,
+                total_records=result.get("records", 0),
+                start_time=start_time,
+                error_message=result.get("error"),
+            )
         else:
             print(f"Table {table} not found in configuration")
     else:
