@@ -17,7 +17,7 @@ target:
 
 sync:
   batch_size: 10000 # Records per batch
-  parallel_tables: 3 # Number of tables to sync in parallel
+parallel_tables: 3 # Number of tables to sync in parallel
 
 # Table Definitions
 # Define each table once with its sync strategy and tags
