@@ -24,8 +24,13 @@ RUN poetry install --no-root --only main
 ## Stage 2: Runtime Stage
 FROM python:3.12-slim-bookworm AS runtime
 
-## Set PATH to include the Poetry-managed virtual environment
-ENV PATH="/app/.venv/bin:${PATH}"
+# Copy SQL Anywhere installation from build stage
+COPY --from=build /opt/sqlanywhere17 /opt/sqlanywhere17
+
+# Set environment variables for SQL Anywhere and Poetry venv
+ENV SQLANY17=/opt/sqlanywhere17 \
+    LD_LIBRARY_PATH="/opt/sqlanywhere17/lib64" \
+    PATH="/app/.venv/bin:${PATH}"
 
 WORKDIR /app
 COPY --from=build /app/.venv .venv
