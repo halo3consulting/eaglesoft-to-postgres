@@ -6,11 +6,11 @@ source:
   port: 2638
   username: halo3
   password: ${SYBASE_PASSWORD}
-  # Optional SQL to run on every new Sybase connection (e.g., to set CONNECTION_AUTHORIZATION).
+  # Optional SQL to run on every new Sybase connection (e.g., to set CONNECTION_AUTHENTICATION).
   # Use environment interpolation to avoid committing secrets:
-  #   connection_init_sql: "SET TEMPORARY OPTION CONNECTION_AUTHORIZATION = '${SYBASE_CONN_AUTH}'"
+  #   connection_init_sql: "SET TEMPORARY OPTION CONNECTION_AUTHENTICATION = '${SYBASE_CONN_AUTH}'"
   # If unset or empty, no initialization SQL is executed.
-  connection_init_sql: "SET TEMPORARY OPTION CONNECTION_AUTHORIZATION = '${SYBASE_CONN_AUTH}'"
+  connection_init_sql: "SET TEMPORARY OPTION CONNECTION_AUTHENTICATION = '${SYBASE_CONN_AUTH}'"
 
 target:
   type: postgresql
