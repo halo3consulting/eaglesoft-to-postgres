@@ -7,6 +7,7 @@ Supports full and incremental sync strategies with configurable scheduling
 import os
 import logging
 import logging.handlers
+import re
 import yaml
 import sqlanydb
 import psycopg2
@@ -311,21 +312,29 @@ class DataSync:
         self._primary_key_cache = {}  # Cache for primary key lookups
 
     def load_config(self, config_path: str) -> Dict:
-        """Load configuration from YAML file"""
+        """Load configuration from YAML file and interpolate ${ENV_VAR} placeholders"""
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        # Replace environment variables
-        config["source"]["password"] = os.getenv(
-            config["source"]["password"].replace("${", "").replace("}", ""),
-            config["source"]["password"],
-        )
-        config["target"]["password"] = os.getenv(
-            config["target"]["password"].replace("${", "").replace("}", ""),
-            config["target"]["password"],
-        )
+        def _interpolate(obj):
+            """Recursively replace ${VAR} tokens with environment values.
 
-        return config
+            - Strings may contain multiple ${VAR} tokens; each is replaced independently.
+            - If an env var is missing, the original ${VAR} text is left as-is.
+            """
+            if isinstance(obj, dict):
+                return {k: _interpolate(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_interpolate(v) for v in obj]
+            if isinstance(obj, str):
+                def repl(match: re.Match) -> str:
+                    var_name = match.group(1)
+                    return os.getenv(var_name, match.group(0))
+
+                return re.sub(r"\$\{([^}]+)\}", repl, obj)
+            return obj
+
+        return _interpolate(config)
 
     def get_tables_for_job(self, job_name: Optional[str] = None) -> List[Dict]:
         """
@@ -458,7 +467,11 @@ class DataSync:
 
     @contextmanager
     def sybase_connection(self):
-        """Create Sybase connection context"""
+        """Create Sybase connection context.
+
+        If `source.connection_init_sql` is configured, execute it immediately after
+        establishing the connection (e.g., to set CONNECTION_AUTHORIZATION).
+        """
         conn = None
         try:
             conn = sqlanydb.connect(
@@ -466,6 +479,15 @@ class DataSync:
                 uid=self.config["source"]["username"],
                 pwd=self.config["source"]["password"],
             )
+
+            init_sql = self.config["source"].get("connection_init_sql")
+            if init_sql:
+                # Intentionally do not log the SQL text to avoid leaking secrets.
+                self.logger.debug("Executing configured Sybase connection_init_sql")
+                cursor = conn.cursor()
+                cursor.execute(init_sql)
+                conn.commit()
+
             yield conn
         finally:
             if conn:
