@@ -470,7 +470,7 @@ class DataSync:
         """Create Sybase connection context.
 
         If `source.connection_init_sql` is configured, execute it immediately after
-        establishing the connection (e.g., to set CONNECTION_AUTHORIZATION).
+        establishing the connection (e.g., to set CONNECTION_AUTHENTICATION).
         """
         conn = None
         try:
