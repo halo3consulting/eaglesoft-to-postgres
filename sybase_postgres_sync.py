@@ -454,16 +454,18 @@ class DataSync:
         self.logger.addHandler(handler)
         self.logger.setLevel(getattr(logging, self.config["logging"]["level"]))
 
-        # File handler
-        file_handler = logging.handlers.RotatingFileHandler(
-            self.config["logging"]["file"],
-            maxBytes=self.config["logging"]["max_bytes"],
-            backupCount=self.config["logging"]["backup_count"],
-        )
-        file_handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
-        self.logger.addHandler(file_handler)
+        # File handler (optional — omit logging.file to log to stdout only)
+        log_file = self.config.get("logging", {}).get("file")
+        if log_file:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file,
+                maxBytes=self.config["logging"].get("max_bytes", 10485760),
+                backupCount=self.config["logging"].get("backup_count", 5),
+            )
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            )
+            self.logger.addHandler(file_handler)
 
     @contextmanager
     def sybase_connection(self):

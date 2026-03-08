@@ -1,0 +1,263 @@
+# =============================================================================
+# eaglesoft-sync Helm Chart - values.yaml
+# =============================================================================
+#
+# This file controls how the sync jobs run in Kubernetes.
+# Each "job" defined below becomes a Kubernetes CronJob that runs
+# on its own schedule. Think of it like cron on a Linux server,
+# but managed by Kubernetes.
+#
+# QUICK START:
+#   1. Fill in your credentials under "secrets" below
+#   2. Install with your sync_config.yaml:
+#      helm install my-sync ./chart/eaglesoft-sync \
+#        --set secrets.SYBASE_PASSWORD="..." \
+#        --set secrets.POSTGRES_PASSWORD="..." \
+#        --set-file syncConfig=sync_config.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Docker image settings
+# ---------------------------------------------------------------------------
+# The container image that runs the sync. The default points to the
+# pre-built image published by the GitHub Actions workflow.
+image:
+  repository: ghcr.io/halo3consulting/eaglesoft-to-postgres
+  # "main" tracks the latest build from the main branch.
+  # For production, pin to a specific SHA tag like "sha-abc1234".
+  tag: "main"
+  # "Always" re-pulls the image on every run — needed for mutable tags
+  # like "main". Change to "IfNotPresent" if you pin to an immutable tag.
+  pullPolicy: Always
+
+# If your image is in a private registry, create a Kubernetes secret with
+# your registry credentials and reference its name here.
+# See: https://kubernetes.io/docs/tasks/configure-pod-container/pull-container-registry/
+imagePullSecrets: []
+#  - name: ghcr-credentials
+
+# ---------------------------------------------------------------------------
+# Secrets (environment variables injected from a Kubernetes Secret)
+# ---------------------------------------------------------------------------
+# Your sync_config.yaml uses ${VAR_NAME} placeholders for sensitive or
+# deployment-specific values (passwords, usernames, connection strings).
+# The Python app replaces these at runtime using environment variables.
+#
+# Every key below becomes an environment variable in the container.
+# Add or remove keys to match whatever ${VAR} placeholders your
+# sync_config.yaml uses.
+#
+# OPTION A: Let this chart create the Secret (simple, good for getting started)
+#   Set secrets.create = true and fill in the values below.
+#
+# OPTION B: Use an existing Secret you already manage in Kubernetes
+#   Set secrets.create = false and set secrets.existingSecretName.
+#   Your Secret must contain keys matching the ${VAR} placeholders
+#   in your sync_config.yaml.
+#
+secrets:
+  # Set to true to have the chart create a Kubernetes Secret for you.
+  create: true
+  # If create=false, specify the name of your existing Kubernetes Secret.
+  existingSecretName: ""
+
+  # Key-value pairs used when create=true. Each key becomes an env var.
+  # These must match the ${VAR} placeholders in your sync_config.yaml.
+  data:
+    SYBASE_USERNAME: "CHANGEME"
+    SYBASE_PASSWORD: "CHANGEME"
+    SYBASE_INIT_SQL: ""
+    POSTGRES_PASSWORD: "CHANGEME"
+
+# ---------------------------------------------------------------------------
+# Sync configuration file (sync_config.yaml)
+# ---------------------------------------------------------------------------
+# Paste the FULL contents of your sync_config.yaml here, OR use
+# --set-file syncConfig=sync_config.yaml when running helm install.
+#
+# Use ${VAR_NAME} placeholders for anything sensitive or deployment-specific.
+# These get replaced at runtime from the environment variables injected
+# by the Secret above.
+#
+# LOGGING NOTE: In Kubernetes, logs go to stdout automatically — K8s
+# captures them and you view them with "kubectl logs". Omit the
+# "logging.file" key (or remove the logging section entirely) to
+# disable file-based logging. The app will log to stdout only.
+#
+syncConfig: |
+  # Paste your sync_config.yaml content here, or use:
+  #   helm install ... --set-file syncConfig=sync_config.yaml
+  #
+  # Example:
+  #
+  # source:
+  #   type: sybase
+  #   host: 10.10.0.15
+  #   port: 2638
+  #   username: ${SYBASE_USERNAME}
+  #   password: ${SYBASE_PASSWORD}
+  #   connection_init_sql: ${SYBASE_INIT_SQL}
+  #
+  # target:
+  #   type: postgresql
+  #   host: postgres.example.com
+  #   port: 5432
+  #   database: eaglesoft_reporting
+  #   username: eaglesoft-sync
+  #   password: ${POSTGRES_PASSWORD}
+  #
+  # sync:
+  #   batch_size: 10000
+  #   parallel_tables: 3
+  #
+  # tables:
+  #   - name: patient
+  #     source_schema: PPM
+  #     target_schema: public
+  #     sync_strategy: cdc
+  #     tags: [critical, cdc]
+  #
+  # jobs:
+  #   quick:
+  #     description: "Fast incremental sync"
+  #     include_strategies: [cdc, incremental, incremental_pk, query_filter]
+  #   nightly:
+  #     description: "All tables"
+  #
+  # # For K8s, omit "logging.file" — logs go to stdout and are
+  # # captured by kubectl logs / your cluster's log aggregator.
+  # logging:
+  #   level: INFO
+
+# ---------------------------------------------------------------------------
+# Sync jobs (CronJobs)
+# ---------------------------------------------------------------------------
+# Each entry here becomes a separate Kubernetes CronJob.
+# The key (e.g., "quick") is passed as "--job <key>" to the sync script.
+#
+# Schedule syntax is standard cron:
+#   ┌───────── minute (0-59)
+#   │ ┌─────── hour (0-23)
+#   │ │ ┌───── day of month (1-31)
+#   │ │ │ ┌─── month (1-12)
+#   │ │ │ │ ┌─ day of week (0-6, Sun=0)
+#   │ │ │ │ │
+#   * * * * *
+#
+jobs:
+  quick:
+    # Run every 10 minutes
+    schedule: "*/10 * * * *"
+    # When true, this job will be created. Set to false to disable.
+    enabled: true
+    # "Forbid" prevents a new run from starting if the previous one
+    # is still going. Other options: "Allow" or "Replace".
+    concurrencyPolicy: Forbid
+    # How many completed/failed job records to keep for inspection.
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    # If the job misses its window by more than this many seconds
+    # (e.g., the cluster was down), it will still start. After this
+    # window, the run is skipped entirely.
+    startingDeadlineSeconds: 600
+    # Maximum time (seconds) a job is allowed to run before being killed.
+    activeDeadlineSeconds: 1800
+    # Number of times to retry a failed job. 0 = no retries.
+    backoffLimit: 1
+    # Extra environment variables for this specific job (optional).
+    extraEnv: []
+    #  - name: SYNC_LOG_LEVEL
+    #    value: "DEBUG"
+    # Resource requests and limits (optional).
+    resources: {}
+    #  requests:
+    #    cpu: "100m"
+    #    memory: "256Mi"
+    #  limits:
+    #    cpu: "500m"
+    #    memory: "512Mi"
+
+  nightly:
+    schedule: "0 18 * * *"
+    enabled: true
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+    startingDeadlineSeconds: 600
+    activeDeadlineSeconds: 7200
+    backoffLimit: 1
+    extraEnv: []
+    resources: {}
+
+  # Uncomment to enable a weekly full rebuild:
+  # full_rebuild:
+  #   schedule: "0 2 * * 0"       # 2 AM every Sunday
+  #   enabled: true
+  #   concurrencyPolicy: Forbid
+  #   successfulJobsHistoryLimit: 1
+  #   failedJobsHistoryLimit: 3
+  #   startingDeadlineSeconds: 600
+  #   activeDeadlineSeconds: 14400  # 4 hours
+  #   backoffLimit: 0
+  #   extraEnv: []
+  #   resources:
+  #     requests:
+  #       cpu: "250m"
+  #       memory: "512Mi"
+  #     limits:
+  #       cpu: "1000m"
+  #       memory: "1Gi"
+
+# ---------------------------------------------------------------------------
+# Default job settings
+# ---------------------------------------------------------------------------
+# Fallback values used when a job above does not specify a value.
+jobDefaults:
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  activeDeadlineSeconds: 3600
+  backoffLimit: 1
+  restartPolicy: Never
+  extraEnv: []
+  resources: {}
+
+# ---------------------------------------------------------------------------
+# Node scheduling
+# ---------------------------------------------------------------------------
+# The SQL Anywhere client in the Docker image is built for linux/amd64 only.
+# This ensures jobs land on an amd64 node (important for mixed-arch clusters).
+nodeSelector:
+  kubernetes.io/arch: amd64
+
+# Advanced scheduling — most users can leave these empty.
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# Pod-level settings
+# ---------------------------------------------------------------------------
+# Annotations added to every job pod (e.g., for Prometheus scraping).
+podAnnotations: {}
+
+# Labels added to every job pod.
+podLabels: {}
+
+# Security context — the Docker image runs as UID 1001 (non-root).
+# These settings enforce that at the Kubernetes level.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# Override the release name prefix used in resource names.
+nameOverride: ""
+fullnameOverride: ""

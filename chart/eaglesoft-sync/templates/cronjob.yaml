@@ -1,0 +1,91 @@
+{{- range $jobName, $jobConfig := .Values.jobs }}
+{{- if (default true $jobConfig.enabled) }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "eaglesoft-sync.fullname" $ }}-{{ $jobName | replace "_" "-" }}
+  labels:
+    {{- include "eaglesoft-sync.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $jobName | replace "_" "-" }}
+spec:
+  schedule: {{ $jobConfig.schedule | quote }}
+  concurrencyPolicy: {{ $jobConfig.concurrencyPolicy | default $.Values.jobDefaults.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ $jobConfig.successfulJobsHistoryLimit | default $.Values.jobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $jobConfig.failedJobsHistoryLimit | default $.Values.jobDefaults.failedJobsHistoryLimit }}
+  {{- if or $jobConfig.startingDeadlineSeconds $.Values.jobDefaults.startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ $jobConfig.startingDeadlineSeconds | default $.Values.jobDefaults.startingDeadlineSeconds }}
+  {{- end }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "eaglesoft-sync.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $jobName | replace "_" "-" }}
+    spec:
+      {{- if or $jobConfig.activeDeadlineSeconds $.Values.jobDefaults.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ $jobConfig.activeDeadlineSeconds | default $.Values.jobDefaults.activeDeadlineSeconds }}
+      {{- end }}
+      backoffLimit: {{ $jobConfig.backoffLimit | default $.Values.jobDefaults.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            {{- include "eaglesoft-sync.selectorLabels" $ | nindent 12 }}
+            app.kubernetes.io/component: {{ $jobName | replace "_" "-" }}
+          {{- with $.Values.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          restartPolicy: {{ $jobConfig.restartPolicy | default $.Values.jobDefaults.restartPolicy }}
+          {{- with $.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: sync
+              image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              command: ["python", "sybase_postgres_sync.py"]
+              args: ["--job", {{ $jobName | quote }}]
+              {{- with $.Values.containerSecurityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              envFrom:
+                - secretRef:
+                    name: {{ include "eaglesoft-sync.secretName" $ }}
+              {{- with ($jobConfig.extraEnv | default $.Values.jobDefaults.extraEnv) }}
+              env:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: config
+                  mountPath: /app/sync_config.yaml
+                  subPath: sync_config.yaml
+                  readOnly: true
+              {{- with ($jobConfig.resources | default $.Values.jobDefaults.resources) }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+          volumes:
+            - name: config
+              configMap:
+                name: {{ include "eaglesoft-sync.configMapName" $ }}
+{{- end }}
+{{- end }}

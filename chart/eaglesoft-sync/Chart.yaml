@@ -1,0 +1,19 @@
+apiVersion: v2
+name: eaglesoft-sync
+description: >-
+  Syncs data from Sybase SQL Anywhere to PostgreSQL on a schedule.
+  Creates one Kubernetes CronJob per configured sync job (quick, nightly, etc.).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - sybase
+  - postgresql
+  - etl
+  - sync
+  - cronjob
+home: https://github.com/halo3consulting/eaglesoft-to-postgres
+sources:
+  - https://github.com/halo3consulting/eaglesoft-to-postgres
+maintainers:
+  - name: James Russo

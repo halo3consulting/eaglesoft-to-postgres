@@ -2,27 +2,27 @@
 
 source:
   type: sybase
-  host: 10.10.0.15
+  host: eaglesoft-server
   port: 2638
-  username: halo3
+  username: ${SYBASE_USERNAME}
   password: ${SYBASE_PASSWORD}
   # Optional SQL to run on every new Sybase connection (e.g., to set CONNECTION_AUTHENTICATION).
   # Use environment interpolation to avoid committing secrets:
   #   connection_init_sql: "SET TEMPORARY OPTION CONNECTION_AUTHENTICATION = '${SYBASE_CONN_AUTH}'"
   # If unset or empty, no initialization SQL is executed.
-  connection_init_sql: "SET TEMPORARY OPTION CONNECTION_AUTHENTICATION = '${SYBASE_CONN_AUTH}'"
+  connection_init_sql: ${SYBASE_INIT_SQL}
 
 target:
   type: postgresql
   host: postgres
   port: 5432
-  database: reporting_db
-  username: postgres
+  database: 
+  username: eaglesoft-sync
   password: ${POSTGRES_PASSWORD}
 
 sync:
   batch_size: 10000 # Records per batch
-parallel_tables: 3 # Number of tables to sync in parallel
+  parallel_tables: 3 # Number of tables to sync in parallel
 
 # Table Definitions
 # Define each table once with its sync strategy and tags
@@ -111,6 +111,12 @@ tables:
     sync_strategy: full
     tags: [reference, static]
 
+  - name: provider_hours
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
   - name: alert
     source_schema: PPM
     target_schema: public
@@ -124,6 +130,18 @@ tables:
     tags: [reference]
 
   - name: services
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: fees
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: fee_schedule
     source_schema: PPM
     target_schema: public
     sync_strategy: full
@@ -164,6 +182,30 @@ tables:
     target_schema: public
     sync_strategy: full
     tags: [reference, static]
+
+  - name: eod
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference]
+
+  - name: eom
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference]
+
+  - name: eoy
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference]
+
+  - name: halo3_doctor_hygiene_services
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference]
 
 # Job Configurations
 # Define different sync jobs for different schedules
@@ -212,7 +254,7 @@ jobs:
     include_tags: [financial]
 
 logging:
-  level: INFO
-  file: sync.log
+  level: DEBUG
+  file: logs/sync.log
   max_bytes: 10485760 # 10MB
   backup_count: 5
