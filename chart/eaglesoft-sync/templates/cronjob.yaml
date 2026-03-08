@@ -10,6 +10,9 @@ metadata:
     app.kubernetes.io/component: {{ $jobName | replace "_" "-" }}
 spec:
   schedule: {{ $jobConfig.schedule | quote }}
+  {{- with ($jobConfig.timeZone | default $.Values.jobDefaults.timeZone) }}
+  timeZone: {{ . | quote }}
+  {{- end }}
   concurrencyPolicy: {{ $jobConfig.concurrencyPolicy | default $.Values.jobDefaults.concurrencyPolicy }}
   successfulJobsHistoryLimit: {{ $jobConfig.successfulJobsHistoryLimit | default $.Values.jobDefaults.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ $jobConfig.failedJobsHistoryLimit | default $.Values.jobDefaults.failedJobsHistoryLimit }}

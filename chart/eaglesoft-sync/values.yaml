@@ -144,6 +144,11 @@ syncConfig: |
 #   │ │ │ │ │
 #   * * * * *
 #
+# timeZone: Set per-job or globally via jobDefaults.timeZone.
+#   Uses IANA names like "America/New_York", "UTC", "Europe/London".
+#   Requires Kubernetes 1.27+ (supported by k3s).
+#   If omitted, schedules run in UTC.
+#
 jobs:
   quick:
     # Run every 10 minutes
@@ -213,6 +218,9 @@ jobs:
 # ---------------------------------------------------------------------------
 # Fallback values used when a job above does not specify a value.
 jobDefaults:
+  # IANA time zone for all jobs (e.g., "America/New_York", "UTC").
+  # Override per-job by setting timeZone on individual jobs.
+  timeZone: ""
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
