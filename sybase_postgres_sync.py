@@ -28,17 +28,32 @@ load_dotenv()
 
 
 def _qi(ident: str) -> str:
-    """Quote a SQL identifier for Postgres / SQL Anywhere (both honor ANSI double-quotes).
+    """Quote a SQL identifier preserving case — use for SQL Anywhere source-side SQL.
 
-    Handles embedded double-quotes by doubling them. Accepts an already-trimmed
-    single identifier — do not pass dotted names like "schema.table".
+    Do not pass dotted names like "schema.table".
     """
     return '"' + ident.replace('"', '""') + '"'
 
 
+def _qi_pg(ident: str) -> str:
+    """Quote an identifier for the Postgres target, lowercasing first.
+
+    Existing target tables were originally created by unquoted DDL, which Postgres
+    normalizes to lowercase. Lowercasing here keeps quoted references matching
+    those stored columns even when Sybase's cursor.description returns mixed case
+    (e.g. "Other_id_6" -> "other_id_6").
+    """
+    return '"' + ident.lower().replace('"', '""') + '"'
+
+
 def _qi_csv(csv: str) -> str:
-    """Quote a comma-separated identifier list (e.g. a composite primary key like "a, b, c")."""
+    """Case-preserving comma-separated identifier list (source side)."""
     return ", ".join(_qi(c.strip()) for c in csv.split(","))
+
+
+def _qi_pg_csv(csv: str) -> str:
+    """Lowercased comma-separated identifier list (Postgres target side)."""
+    return ", ".join(_qi_pg(c.strip()) for c in csv.split(","))
 
 
 class SyncState:
@@ -815,15 +830,15 @@ class DataSync:
                 pg_index_name = f"{table_name}_{index_name}".lower().replace(" ", "_")
 
                 # Build column list
-                column_list = ", ".join(_qi(c) for c in columns)
+                column_list = ", ".join(_qi_pg(c) for c in columns)
 
                 # Create unique or regular index
                 unique_clause = "UNIQUE" if is_unique else ""
 
                 try:
                     create_index_sql = f"""
-                        CREATE {unique_clause} INDEX IF NOT EXISTS {_qi(pg_index_name)}
-                        ON {_qi(target_schema)}.{_qi(table_name)} ({column_list})
+                        CREATE {unique_clause} INDEX IF NOT EXISTS {_qi_pg(pg_index_name)}
+                        ON {_qi_pg(target_schema)}.{_qi_pg(table_name)} ({column_list})
                     """
 
                     cursor.execute(create_index_sql)
@@ -882,18 +897,18 @@ class DataSync:
                     col_name, domain_name, width, scale, nulls = col
                     pg_type = self.map_sybase_to_postgres_type(domain_name, width, scale)
                     null_clause = "" if nulls == "Y" else "NOT NULL"
-                    columns.append(f"{_qi(col_name)} {pg_type} {null_clause}")
+                    columns.append(f"{_qi_pg(col_name)} {pg_type} {null_clause}")
 
                 # Auto-detect primary key from source, or use config override
                 primary_key = table_config.get("primary_key") or self.get_primary_key(
                     source_conn, table_name
                 )
                 if primary_key:
-                    columns.append(f"PRIMARY KEY ({_qi_csv(primary_key)})")
+                    columns.append(f"PRIMARY KEY ({_qi_pg_csv(primary_key)})")
                     self.logger.info(f"Primary key for {table_name}: {primary_key}")
 
                 create_sql = f"""
-                    CREATE TABLE {_qi(target_schema)}.{_qi(table_name)} (
+                    CREATE TABLE {_qi_pg(target_schema)}.{_qi_pg(table_name)} (
                         {", ".join(columns)}
                     )
                 """
@@ -928,8 +943,8 @@ class DataSync:
                         try:
                             cursor.execute(
                                 f"""
-                                ALTER TABLE {_qi(target_schema)}.{_qi(table_name)}
-                                ADD PRIMARY KEY ({_qi_csv(primary_key)})
+                                ALTER TABLE {_qi_pg(target_schema)}.{_qi_pg(table_name)}
+                                ADD PRIMARY KEY ({_qi_pg_csv(primary_key)})
                             """
                             )
                             target_conn.commit()
@@ -939,8 +954,8 @@ class DataSync:
                             pk_slug = re.sub(r"[^A-Za-z0-9_]+", "_", primary_key)
                             cursor.execute(
                                 f"""
-                                CREATE UNIQUE INDEX IF NOT EXISTS {_qi(f"{table_name}_{pk_slug}_unique_idx")}
-                                ON {_qi(target_schema)}.{_qi(table_name)} ({_qi_csv(primary_key)})
+                                CREATE UNIQUE INDEX IF NOT EXISTS {_qi_pg(f"{table_name}_{pk_slug}_unique_idx")}
+                                ON {_qi_pg(target_schema)}.{_qi_pg(table_name)} ({_qi_pg_csv(primary_key)})
                             """
                             )
                             target_conn.commit()
@@ -1065,7 +1080,7 @@ class DataSync:
                     if effective_strategy == "full":
                         self.logger.info(f"Truncating target table {table_name}")
                         target_cursor.execute(
-                            f"TRUNCATE TABLE {_qi(table_config['target_schema'])}.{_qi(table_name)}"
+                            f"TRUNCATE TABLE {_qi_pg(table_config['target_schema'])}.{_qi_pg(table_name)}"
                         )
 
                     # Process batches
@@ -1268,12 +1283,12 @@ class DataSync:
 
                         elif change_type == "D":  # Deleted
                             # Build WHERE clause for DELETE with composite keys
-                            where_clause = " AND ".join([f"{_qi(col)} = %s" for col in pk_columns])
+                            where_clause = " AND ".join([f"{_qi_pg(col)} = %s" for col in pk_columns])
 
                             # Delete from target
                             target_cursor.execute(
                                 f"""
-                                DELETE FROM {_qi(target_schema)}.{_qi(table_name)}
+                                DELETE FROM {_qi_pg(target_schema)}.{_qi_pg(table_name)}
                                 WHERE {where_clause}
                             """,
                                 pk_values,
@@ -1461,8 +1476,8 @@ class DataSync:
         values = [tuple(row) for row in batch]
 
         # Build insert query
-        columns_str = ", ".join(_qi(c) for c in columns)
-        qualified_table = f"{_qi(target_schema)}.{_qi(table_name)}"
+        columns_str = ", ".join(_qi_pg(c) for c in columns)
+        qualified_table = f"{_qi_pg(target_schema)}.{_qi_pg(table_name)}"
 
         if primary_key and table_config.get("sync_strategy") != "append":
             # Upsert with conflict resolution
@@ -1471,9 +1486,11 @@ class DataSync:
 
             # Exclude primary key columns from update
             update_cols = [
-                f"{_qi(col)} = EXCLUDED.{_qi(col)}" for col in columns if col not in pk_columns
+                f"{_qi_pg(col)} = EXCLUDED.{_qi_pg(col)}"
+                for col in columns
+                if col not in pk_columns
             ]
-            pk_conflict = _qi_csv(primary_key)
+            pk_conflict = _qi_pg_csv(primary_key)
 
             # execute_values requires %s as a template placeholder
             if update_cols:
