@@ -27,6 +27,20 @@ import uuid
 load_dotenv()
 
 
+def _qi(ident: str) -> str:
+    """Quote a SQL identifier for Postgres / SQL Anywhere (both honor ANSI double-quotes).
+
+    Handles embedded double-quotes by doubling them. Accepts an already-trimmed
+    single identifier — do not pass dotted names like "schema.table".
+    """
+    return '"' + ident.replace('"', '""') + '"'
+
+
+def _qi_csv(csv: str) -> str:
+    """Quote a comma-separated identifier list (e.g. a composite primary key like "a, b, c")."""
+    return ", ".join(_qi(c.strip()) for c in csv.split(","))
+
+
 class SyncState:
     """Manages sync state for incremental updates using PostgreSQL"""
 
@@ -801,15 +815,15 @@ class DataSync:
                 pg_index_name = f"{table_name}_{index_name}".lower().replace(" ", "_")
 
                 # Build column list
-                column_list = ", ".join(columns)
+                column_list = ", ".join(_qi(c) for c in columns)
 
                 # Create unique or regular index
                 unique_clause = "UNIQUE" if is_unique else ""
 
                 try:
                     create_index_sql = f"""
-                        CREATE {unique_clause} INDEX IF NOT EXISTS {pg_index_name}
-                        ON {target_schema}.{table_name} ({column_list})
+                        CREATE {unique_clause} INDEX IF NOT EXISTS {_qi(pg_index_name)}
+                        ON {_qi(target_schema)}.{_qi(table_name)} ({column_list})
                     """
 
                     cursor.execute(create_index_sql)
@@ -868,18 +882,18 @@ class DataSync:
                     col_name, domain_name, width, scale, nulls = col
                     pg_type = self.map_sybase_to_postgres_type(domain_name, width, scale)
                     null_clause = "" if nulls == "Y" else "NOT NULL"
-                    columns.append(f"{col_name} {pg_type} {null_clause}")
+                    columns.append(f"{_qi(col_name)} {pg_type} {null_clause}")
 
                 # Auto-detect primary key from source, or use config override
                 primary_key = table_config.get("primary_key") or self.get_primary_key(
                     source_conn, table_name
                 )
                 if primary_key:
-                    columns.append(f"PRIMARY KEY ({primary_key})")
+                    columns.append(f"PRIMARY KEY ({_qi_csv(primary_key)})")
                     self.logger.info(f"Primary key for {table_name}: {primary_key}")
 
                 create_sql = f"""
-                    CREATE TABLE {target_schema}.{table_name} (
+                    CREATE TABLE {_qi(target_schema)}.{_qi(table_name)} (
                         {", ".join(columns)}
                     )
                 """
@@ -914,18 +928,19 @@ class DataSync:
                         try:
                             cursor.execute(
                                 f"""
-                                ALTER TABLE {target_schema}.{table_name}
-                                ADD PRIMARY KEY ({primary_key})
+                                ALTER TABLE {_qi(target_schema)}.{_qi(table_name)}
+                                ADD PRIMARY KEY ({_qi_csv(primary_key)})
                             """
                             )
                             target_conn.commit()
                         except Exception as e:
                             self.logger.warning(f"Could not add primary key: {e}")
                             # Create unique index as fallback
+                            pk_slug = re.sub(r"[^A-Za-z0-9_]+", "_", primary_key)
                             cursor.execute(
                                 f"""
-                                CREATE UNIQUE INDEX IF NOT EXISTS {table_name}_{primary_key}_unique_idx
-                                ON {target_schema}.{table_name} ({primary_key})
+                                CREATE UNIQUE INDEX IF NOT EXISTS {_qi(f"{table_name}_{pk_slug}_unique_idx")}
+                                ON {_qi(target_schema)}.{_qi(table_name)} ({_qi_csv(primary_key)})
                             """
                             )
                             target_conn.commit()
@@ -1050,7 +1065,7 @@ class DataSync:
                     if effective_strategy == "full":
                         self.logger.info(f"Truncating target table {table_name}")
                         target_cursor.execute(
-                            f"TRUNCATE TABLE {table_config['target_schema']}.{table_name}"
+                            f"TRUNCATE TABLE {_qi(table_config['target_schema'])}.{_qi(table_name)}"
                         )
 
                     # Process batches
@@ -1181,8 +1196,8 @@ class DataSync:
             self.logger.info(f"Querying change records from {source_schema}.{rw_table_name}")
             source_cursor.execute(
                 f"""
-                SELECT {primary_key}, datetime_modified, change_type
-                FROM {source_schema}.{rw_table_name}
+                SELECT {_qi_csv(primary_key)}, datetime_modified, change_type
+                FROM {_qi(source_schema)}.{_qi(rw_table_name)}
                 ORDER BY datetime_modified
             """
             )
@@ -1214,12 +1229,12 @@ class DataSync:
                     try:
                         if change_type in ("N", "U"):  # New or Updated
                             # Build WHERE clause for composite keys
-                            where_clause = " AND ".join([f"{col} = ?" for col in pk_columns])
+                            where_clause = " AND ".join([f"{_qi(col)} = ?" for col in pk_columns])
 
                             # Fetch the full record from the source table
                             source_cursor.execute(
                                 f"""
-                                SELECT * FROM {source_schema}.{table_name}
+                                SELECT * FROM {_qi(source_schema)}.{_qi(table_name)}
                                 WHERE {where_clause}
                             """,
                                 pk_values,
@@ -1253,12 +1268,12 @@ class DataSync:
 
                         elif change_type == "D":  # Deleted
                             # Build WHERE clause for DELETE with composite keys
-                            where_clause = " AND ".join([f"{col} = %s" for col in pk_columns])
+                            where_clause = " AND ".join([f"{_qi(col)} = %s" for col in pk_columns])
 
                             # Delete from target
                             target_cursor.execute(
                                 f"""
-                                DELETE FROM {target_schema}.{table_name}
+                                DELETE FROM {_qi(target_schema)}.{_qi(table_name)}
                                 WHERE {where_clause}
                             """,
                                 pk_values,
@@ -1291,15 +1306,15 @@ class DataSync:
                     pk_values_flat = [pk[0] for pk in processed_pks]
                     source_cursor.execute(
                         f"""
-                        DELETE FROM {source_schema}.{rw_table_name}
-                        WHERE {primary_key} IN ({placeholders})
+                        DELETE FROM {_qi(source_schema)}.{_qi(rw_table_name)}
+                        WHERE {_qi(pk_columns[0])} IN ({placeholders})
                     """,
                         pk_values_flat,
                     )
                 else:
                     # Composite primary key - build WHERE clause with OR conditions
                     # WHERE (col1 = ? AND col2 = ?) OR (col1 = ? AND col2 = ?) ...
-                    single_condition = " AND ".join([f"{col} = ?" for col in pk_columns])
+                    single_condition = " AND ".join([f"{_qi(col)} = ?" for col in pk_columns])
                     or_conditions = " OR ".join([f"({single_condition})" for _ in processed_pks])
 
                     # Flatten pk_values tuples into a single list
@@ -1309,7 +1324,7 @@ class DataSync:
 
                     source_cursor.execute(
                         f"""
-                        DELETE FROM {source_schema}.{rw_table_name}
+                        DELETE FROM {_qi(source_schema)}.{_qi(rw_table_name)}
                         WHERE {or_conditions}
                     """,
                         all_values,
@@ -1348,7 +1363,8 @@ class DataSync:
         source_schema = table_config.get("source_schema", "dbo")
         strategy = table_config.get("sync_strategy", "full")
 
-        base_query = f"SELECT * FROM {source_schema}.{table_name}"
+        qualified_source = f"{_qi(source_schema)}.{_qi(table_name)}"
+        base_query = f"SELECT * FROM {qualified_source}"
 
         if strategy == "incremental" and "incremental_column" in table_config:
             last_value = self.sync_state.get_last_sync_value(
@@ -1357,8 +1373,8 @@ class DataSync:
 
             if last_value:
                 incremental_col = table_config["incremental_column"]
-                base_query += f" WHERE {incremental_col} > '{last_value}'"
-                base_query += f" ORDER BY {incremental_col}"
+                base_query += f" WHERE {_qi(incremental_col)} > '{last_value}'"
+                base_query += f" ORDER BY {_qi(incremental_col)}"
 
         elif strategy == "incremental_pk":
             # Use primary key for incremental sync
@@ -1376,9 +1392,9 @@ class DataSync:
             if last_pk_value:
                 # Assuming single-column numeric primary key for simplicity
                 # For composite keys, this would need to be more complex
-                base_query += f" WHERE {primary_key} > {last_pk_value}"
+                base_query += f" WHERE {_qi(primary_key.strip())} > {last_pk_value}"
 
-            base_query += f" ORDER BY {primary_key}"
+            base_query += f" ORDER BY {_qi_csv(primary_key)}"
 
         elif strategy == "query_filter":
             # Use custom query to filter which records to sync
@@ -1406,8 +1422,8 @@ class DataSync:
             if len(pk_columns) == 1:
                 # Single column primary key - simple IN clause
                 base_query = f"""
-                    SELECT * FROM {source_schema}.{table_name}
-                    WHERE {primary_key} IN ({filter_query})
+                    SELECT * FROM {qualified_source}
+                    WHERE {_qi(pk_columns[0])} IN ({filter_query})
                 """
             else:
                 # Composite primary key - use EXISTS with subquery
@@ -1415,13 +1431,13 @@ class DataSync:
                 # Build the join condition for all PK columns
                 join_conditions = " AND ".join(
                     [
-                        f"{source_schema}.{table_name}.{col} = filter_results.{col}"
+                        f"{qualified_source}.{_qi(col)} = filter_results.{_qi(col)}"
                         for col in pk_columns
                     ]
                 )
 
                 base_query = f"""
-                    SELECT * FROM {source_schema}.{table_name}
+                    SELECT * FROM {qualified_source}
                     WHERE EXISTS (
                         SELECT 1 FROM ({filter_query}) AS filter_results
                         WHERE {join_conditions}
@@ -1445,7 +1461,8 @@ class DataSync:
         values = [tuple(row) for row in batch]
 
         # Build insert query
-        columns_str = ", ".join(columns)
+        columns_str = ", ".join(_qi(c) for c in columns)
+        qualified_table = f"{_qi(target_schema)}.{_qi(table_name)}"
 
         if primary_key and table_config.get("sync_strategy") != "append":
             # Upsert with conflict resolution
@@ -1453,28 +1470,31 @@ class DataSync:
             pk_columns = [col.strip() for col in primary_key.split(",")]
 
             # Exclude primary key columns from update
-            update_cols = [f"{col} = EXCLUDED.{col}" for col in columns if col not in pk_columns]
+            update_cols = [
+                f"{_qi(col)} = EXCLUDED.{_qi(col)}" for col in columns if col not in pk_columns
+            ]
+            pk_conflict = _qi_csv(primary_key)
 
             # execute_values requires %s as a template placeholder
             if update_cols:
                 # Has columns to update
                 query = f"""
-                    INSERT INTO {target_schema}.{table_name} ({columns_str})
+                    INSERT INTO {qualified_table} ({columns_str})
                     VALUES %s
-                    ON CONFLICT ({primary_key}) DO UPDATE SET
+                    ON CONFLICT ({pk_conflict}) DO UPDATE SET
                     {", ".join(update_cols)}
                 """
             else:
                 # No columns to update (table only has PK columns), use DO NOTHING
                 query = f"""
-                    INSERT INTO {target_schema}.{table_name} ({columns_str})
+                    INSERT INTO {qualified_table} ({columns_str})
                     VALUES %s
-                    ON CONFLICT ({primary_key}) DO NOTHING
+                    ON CONFLICT ({pk_conflict}) DO NOTHING
                 """
         else:
             # Simple insert
             query = f"""
-                INSERT INTO {target_schema}.{table_name} ({columns_str})
+                INSERT INTO {qualified_table} ({columns_str})
                 VALUES %s
             """
 

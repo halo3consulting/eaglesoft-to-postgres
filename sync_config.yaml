@@ -84,6 +84,18 @@ tables:
     incremental_column: freshness
     tags: [incremental]
 
+  - name: images
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: incremental_pk
+    tags: [incremental]
+
+  - name: image_group
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: incremental_pk
+    tags: [incremental]
+
   # Query-filtered tables
   - name: patient_alerts
     source_schema: PPM
@@ -206,6 +218,18 @@ tables:
     target_schema: public
     sync_strategy: full
     tags: [reference]
+
+  - name: image_templates
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
+
+  - name: image_template_items
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, static]
 
 # Job Configurations
 # Define different sync jobs for different schedules
