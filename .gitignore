@@ -1,6 +1,8 @@
 sync.log
 .DS_Store
 .env
+my-values.yaml
+*values.local.yaml
 client17011/client_standalone.tic
 client17011/dev_license_ja.txt
 client17011/dev_license.txt
