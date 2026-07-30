@@ -109,8 +109,9 @@ tables:
     tags: [incremental]
 
   # Insurance tables
-  - name: claims
+  - name: insurance_claim
     source_schema: PPM
+    primary_key: claim_id
     target_schema: public
     sync_strategy: full
     tags: [insurance]
