@@ -194,24 +194,27 @@ jobs:
     extraEnv: []
     resources: {}
 
-  # Uncomment to enable a weekly full rebuild:
-  # full_rebuild:
-  #   schedule: "0 2 * * 0"       # 2 AM every Sunday
-  #   enabled: true
-  #   concurrencyPolicy: Forbid
-  #   successfulJobsHistoryLimit: 1
-  #   failedJobsHistoryLimit: 3
-  #   startingDeadlineSeconds: 600
-  #   activeDeadlineSeconds: 14400  # 4 hours
-  #   backoffLimit: 0
-  #   extraEnv: []
-  #   resources:
-  #     requests:
-  #       cpu: "250m"
-  #       memory: "512Mi"
-  #     limits:
-  #       cpu: "1000m"
-  #       memory: "1Gi"
+  # Weekly full rebuild — required, not optional: transactions_header and
+  # transactions_detail sync with incremental_pk (append-only), so in-place
+  # updates to already-synced rows (balances, insurance paid amounts) are
+  # only corrected by this job.
+  full_rebuild:
+    schedule: "0 2 * * 0"       # 2 AM every Sunday
+    enabled: true
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 1
+    failedJobsHistoryLimit: 3
+    startingDeadlineSeconds: 600
+    activeDeadlineSeconds: 14400  # 4 hours
+    backoffLimit: 0
+    extraEnv: []
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
 
 # ---------------------------------------------------------------------------
 # Default job settings
