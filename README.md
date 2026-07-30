@@ -56,3 +56,47 @@ docker run -v $(pwd)/sync_config.yaml:/app/sync_config.yaml \
            -v $(pwd)/.env:/app/.env \
            eaglesoft-sync
 ```
+
+## Helm / Kubernetes
+
+### Upgrading the release
+
+The chart's `syncConfig` value defaults to commented placeholder text. The real
+`sync_config.yaml` is **not** stored in `my-values.yaml` — it must be injected
+at upgrade time with `--set-file`. **Always include this flag, or the
+ConfigMap will be reverted to the placeholder and every CronJob will crash
+with `TypeError: 'NoneType' object is not subscriptable` in
+`setup_logging`.**
+
+```bash
+helm upgrade eaglesoft-sync chart/eaglesoft-sync \
+  -f my-values.yaml \
+  --set-file syncConfig=sync_config.yaml \
+  -n eaglesoft-sync
+```
+
+Verify the ConfigMap got the real config (should show `source:` / `target:` /
+`tables:`, not commented `# source:`):
+
+```bash
+kubectl get configmap eaglesoft-sync-config -n eaglesoft-sync \
+  -o jsonpath='{.data.sync_config\.yaml}' | head -20
+```
+
+### Full rebuilds
+
+The chart schedules `full_rebuild` weekly (Sunday 2 AM by default). This is
+**required**, not optional: `transactions_header` and `transactions_detail`
+sync with `incremental_pk` (append-only), so in-place updates to
+already-synced rows (balances, insurance paid amounts) are only corrected
+by a full rebuild.
+
+**Check `my-values.yaml` before assuming rebuilds are running** — an
+override there with an unreachable cron like `0 0 31 2 *` (Feb 31) makes
+the CronJob manual-trigger-only and silently disables the weekly repair.
+
+To trigger a rebuild manually:
+
+1. Open k9s, `:cj` for the CronJobs view
+2. Highlight `eaglesoft-sync-full-rebuild`
+3. Press `t` — creates a one-off Job from the CronJob template

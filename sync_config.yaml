@@ -56,6 +56,20 @@ tables:
   # feed only emits updates (no inserts), which silently dropped new rows.
   # It is replicated as a Postgres view instead — see sql/create_transactions_view.sql.
 
+  - name: transactions_header
+    source_schema: PPM
+    primary_key: tran_num
+    target_schema: public
+    sync_strategy: incremental_pk
+    tags: [critical, financial]
+
+  - name: transactions_detail
+    source_schema: PPM
+    primary_key: detail_id
+    target_schema: public
+    sync_strategy: incremental_pk
+    tags: [critical, financial]
+
   - name: treatment_plans
     source_schema: PPM
     target_schema: public
@@ -69,18 +83,6 @@ tables:
     tags: [critical, cdc]
 
   # Incremental tables
-  - name: transactions_header
-    source_schema: PPM
-    target_schema: public
-    sync_strategy: incremental_pk
-    tags: [incremental, financial]
-
-  - name: transactions_detail
-    source_schema: PPM
-    target_schema: public
-    sync_strategy: incremental_pk
-    tags: [incremental, financial]
-
   - name: bulk_payments
     source_schema: PPM
     target_schema: public
@@ -284,6 +286,11 @@ jobs:
   full_rebuild:
     description: "Complete rebuild - truncate and reload ALL tables"
     override_strategy: full # Forces all tables to use 'full' strategy
+
+  # One-off backfill of transactions_header and transactions_detail
+  transactions_backfill:
+    description: "One-off backfill of transactions_header and transactions_detail"
+    include_tables: [transactions_header, transactions_detail]
 
   # Reference data only - runs weekly or when reference data changes
   reference:
