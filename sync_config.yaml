@@ -51,12 +51,10 @@ tables:
     sync_strategy: cdc
     tags: [critical, cdc]
 
-  - name: transactions
-    source_schema: PPM
-    primary_key: tran_num # transactions is actually a view
-    target_schema: public
-    sync_strategy: cdc
-    tags: [critical, cdc, financial]
+  # NOTE: "transactions" is NOT synced. PPM.transactions is a view over
+  # transactions_header + transactions_detail, and its rw_transactions CDC
+  # feed only emits updates (no inserts), which silently dropped new rows.
+  # It is replicated as a Postgres view instead — see sql/create_transactions_view.sql.
 
   - name: treatment_plans
     source_schema: PPM
@@ -71,6 +69,18 @@ tables:
     tags: [critical, cdc]
 
   # Incremental tables
+  - name: transactions_header
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: incremental_pk
+    tags: [incremental, financial]
+
+  - name: transactions_detail
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: incremental_pk
+    tags: [incremental, financial]
+
   - name: bulk_payments
     source_schema: PPM
     target_schema: public
@@ -95,6 +105,13 @@ tables:
     target_schema: public
     sync_strategy: incremental_pk
     tags: [incremental]
+
+  # Insurance tables
+  - name: claims
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [insurance]
 
   # Query-filtered tables
   - name: patient_alerts
@@ -158,6 +175,12 @@ tables:
     target_schema: public
     sync_strategy: full
     tags: [reference, static]
+
+  - name: insurance_company
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [reference, insurance]
 
   - name: employer
     source_schema: PPM
