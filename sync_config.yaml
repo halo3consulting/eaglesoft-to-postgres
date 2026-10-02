@@ -116,6 +116,28 @@ tables:
     sync_strategy: full
     tags: [insurance]
 
+  # Referral tables
+  - name: referred_by
+    source_schema: PPM
+    primary_key: referred_patient
+    target_schema: public
+    sync_strategy: full
+    tags: [referral]
+
+  - name: other_referral
+    source_schema: PPM
+    primary_key: other_referral_id
+    target_schema: public
+    sync_strategy: full
+    tags: [referral, reference]
+
+  - name: referral_productivity
+    source_schema: PPM
+    primary_key: other_referral_id, eom_sequence
+    target_schema: public
+    sync_strategy: full
+    tags: [referral]
+
   # Query-filtered tables
   - name: patient_alerts
     source_schema: PPM
