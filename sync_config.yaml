@@ -138,6 +138,37 @@ tables:
     sync_strategy: full
     tags: [referral]
 
+  # Provider schedule tables
+  - name: provider_hours
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [schedule, reference]
+
+  - name: provider_schedule
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [schedule, reference]
+
+  - name: custom_hours
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [schedule, reference]
+
+  - name: recurrance
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [schedule, reference]
+
+  - name: recurrance_chair
+    source_schema: PPM
+    target_schema: public
+    sync_strategy: full
+    tags: [schedule, reference]
+
   # Query-filtered tables
   - name: patient_alerts
     source_schema: PPM
@@ -160,12 +191,6 @@ tables:
     tags: [reference, static]
 
   - name: provider
-    source_schema: PPM
-    target_schema: public
-    sync_strategy: full
-    tags: [reference, static]
-
-  - name: provider_hours
     source_schema: PPM
     target_schema: public
     sync_strategy: full
