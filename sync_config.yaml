@@ -138,6 +138,23 @@ tables:
     sync_strategy: full
     tags: [referral]
 
+  # SmartDoc (document manager) tables — document metadata only; the files
+  # themselves live outside the database. document_name can contain patient
+  # names (PHI).
+  - name: document
+    source_schema: PPM
+    primary_key: document_id
+    target_schema: public
+    sync_strategy: full
+    tags: [smartdoc]
+
+  - name: document_group
+    source_schema: PPM
+    primary_key: group_id
+    target_schema: public
+    sync_strategy: full
+    tags: [smartdoc, reference]
+
   # Provider schedule tables
   - name: provider_hours
     source_schema: PPM
@@ -344,6 +361,11 @@ jobs:
   reference:
     description: "Sync only static/reference tables"
     include_tags: [reference, static]
+
+  # SmartDoc only - on-demand sync of the document manager tables
+  smartdoc:
+    description: "Sync only SmartDoc document tables"
+    include_tags: [smartdoc]
 
   # Critical only - for testing or emergency syncs
   critical:
