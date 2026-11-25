@@ -7,6 +7,8 @@ Supports full and incremental sync strategies with configurable scheduling
 import os
 import sys
 import logging
+import urllib.parse
+import urllib.request
 import logging.handlers
 import re
 import yaml
@@ -1673,13 +1675,72 @@ Sync completed in {duration:.2f} seconds:
         return self.stats
 
 
-@click.command()
-@click.option("--config", "-c", default="sync_config.yaml", help="Configuration file path")
-@click.option("--job", "-j", help="Job name to run (e.g., 'quick', 'full', 'reference')")
-@click.option("--table", "-t", help="Sync specific table only")
-def main(config, job, table):
-    """Sybase to PostgreSQL Data Sync Tool"""
+ALERT_ENV = "SYNC_ALERT_ON_FAILURE"
+PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
+MAX_LISTED_FAILURES = 10
 
+
+def send_failure_alert(title: str, message: str) -> bool:
+    """Push a failure alert to Pushover if this job is configured to alert.
+
+    Alerts are opt-in per job (SYNC_ALERT_ON_FAILURE=true, set by the Helm chart's
+    alertOnFailure) because the quick sync fails for about a minute every night at
+    23:05 ET while the Eaglesoft server is unreachable. Never raises: a broken alert
+    must not change the sync's own exit code.
+    """
+    if os.environ.get(ALERT_ENV, "").strip().lower() not in ("1", "true", "yes"):
+        return False
+
+    token = os.environ.get("PUSHOVER_TOKEN")
+    user = os.environ.get("PUSHOVER_USER")
+    if not token or not user:
+        print(
+            f"WARNING: {ALERT_ENV} is set but PUSHOVER_TOKEN / PUSHOVER_USER are missing; "
+            "no alert sent",
+            file=sys.stderr,
+        )
+        return False
+
+    pod = os.environ.get("HOSTNAME")
+    if pod:
+        message = f"{message}\nPod: {pod}"
+
+    data = urllib.parse.urlencode(
+        {
+            "token": token,
+            "user": user,
+            "title": title[:250],
+            "message": message[:1024],
+            "priority": 1,
+            "sound": "siren",
+        }
+    ).encode()
+    try:
+        with urllib.request.urlopen(PUSHOVER_URL, data=data, timeout=20) as resp:
+            resp.read()
+        return True
+    except Exception as e:  # noqa: BLE001 - alerting is best effort
+        print(f"WARNING: failed to send Pushover alert: {e}", file=sys.stderr)
+        return False
+
+
+def describe_failures(stats: Dict) -> str:
+    """One-line headline plus the first few failed tables, for an alert body."""
+    errors = stats.get("errors", [])
+    if stats.get("validation_failed"):
+        lines = [f"Validation failed for {len(errors)} table(s); nothing was synced."]
+    else:
+        lines = [f"{len(errors)} table(s) failed; {stats.get('tables_synced', 0)} synced."]
+    for error in errors[:MAX_LISTED_FAILURES]:
+        detail = str(error.get("error") or "unknown error")[:200]
+        lines.append(f"- {error.get('table', '?')}: {detail}")
+    if len(errors) > MAX_LISTED_FAILURES:
+        lines.append(f"... and {len(errors) - MAX_LISTED_FAILURES} more")
+    return "\n".join(lines)
+
+
+def _run(config: str, job: Optional[str], table: Optional[str], label: str) -> int:
+    """Run the requested sync and return the process exit code."""
     syncer = DataSync(config)
 
     if table:
@@ -1687,31 +1748,63 @@ def main(config, job, table):
         table_config = next(
             (t for t in syncer.config.get("tables", []) if t["name"] == table), None
         )
-        if table_config:
-            # Create sync run for single table sync
-            start_time = datetime.now()
-            sync_run_id = syncer.sync_state.create_sync_run(f"single-table:{table}")
+        if table_config is None:
+            print(f"Table {table} not found in configuration", file=sys.stderr)
+            return 2
 
-            result = syncer.sync_table(table_config, sync_run_id)
-            print(json.dumps(result, indent=2))
+        # Create sync run for single table sync
+        start_time = datetime.now()
+        sync_run_id = syncer.sync_state.create_sync_run(f"single-table:{table}")
 
-            # Complete sync run
-            syncer.sync_state.complete_sync_run(
-                sync_run_id=sync_run_id,
-                total_tables=1,
-                successful_tables=1 if result["status"] == "success" else 0,
-                failed_tables=0 if result["status"] == "success" else 1,
-                total_records=result.get("records", 0),
-                start_time=start_time,
-                error_message=result.get("error"),
+        result = syncer.sync_table(table_config, sync_run_id)
+        print(json.dumps(result, indent=2))
+
+        # Complete sync run
+        syncer.sync_state.complete_sync_run(
+            sync_run_id=sync_run_id,
+            total_tables=1,
+            successful_tables=1 if result["status"] == "success" else 0,
+            failed_tables=0 if result["status"] == "success" else 1,
+            total_records=result.get("records", 0),
+            start_time=start_time,
+            error_message=result.get("error"),
+        )
+        if result["status"] != "success":
+            send_failure_alert(
+                f"Eaglesoft sync [{label}] FAILED",
+                f"{table}: {result.get('error') or 'unknown error'}",
             )
-        else:
-            print(f"Table {table} not found in configuration")
-    else:
-        # Run sync with optional job filter
-        stats = syncer.run_sync(job_name=job)
-        if stats.get("validation_failed"):
-            sys.exit(1)
+            return 1
+        return 0
+
+    # Run sync with optional job filter. Any failed table fails the process: a clean
+    # exit made Kubernetes report the Job as Complete while the replica went four
+    # nights without a nightly sync (2026-11-21..24).
+    stats = syncer.run_sync(job_name=job)
+    if stats.get("errors") or stats.get("validation_failed"):
+        send_failure_alert(f"Eaglesoft sync [{label}] FAILED", describe_failures(stats))
+        return 1
+    return 0
+
+
+@click.command()
+@click.option("--config", "-c", default="sync_config.yaml", help="Configuration file path")
+@click.option("--job", "-j", help="Job name to run (e.g., 'quick', 'full', 'reference')")
+@click.option("--table", "-t", help="Sync specific table only")
+def main(config, job, table):
+    """Sybase to PostgreSQL Data Sync Tool
+
+    Exits 0 only when every table synced; 1 when any table failed, validation
+    aborted the run, or the sync crashed; 2 when --table names an unknown table.
+    """
+    label = f"single-table:{table}" if table else (job or "all tables")
+    try:
+        exit_code = _run(config, job, table, label)
+    except Exception as e:
+        send_failure_alert(f"Eaglesoft sync [{label}] CRASHED", f"{type(e).__name__}: {e}")
+        raise
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

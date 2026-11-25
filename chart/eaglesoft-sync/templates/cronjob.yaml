@@ -1,5 +1,7 @@
 {{- range $jobName, $jobConfig := .Values.jobs }}
 {{- if (default true $jobConfig.enabled) }}
+{{- $alert := ternary $jobConfig.alertOnFailure $.Values.jobDefaults.alertOnFailure (hasKey $jobConfig "alertOnFailure") }}
+{{- $extraEnv := $jobConfig.extraEnv | default $.Values.jobDefaults.extraEnv }}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -73,9 +75,22 @@ spec:
               envFrom:
                 - secretRef:
                     name: {{ include "eaglesoft-sync.secretName" $ }}
-              {{- with ($jobConfig.extraEnv | default $.Values.jobDefaults.extraEnv) }}
+                {{- if and $alert $.Values.alerts.existingSecretName }}
+                # PUSHOVER_TOKEN, PUSHOVER_USER. Optional so a missing Secret never
+                # blocks a sync; the job then logs a warning instead of alerting.
+                - secretRef:
+                    name: {{ $.Values.alerts.existingSecretName }}
+                    optional: true
+                {{- end }}
+              {{- if or $alert $extraEnv }}
               env:
+                {{- if $alert }}
+                - name: SYNC_ALERT_ON_FAILURE
+                  value: "true"
+                {{- end }}
+                {{- with $extraEnv }}
                 {{- toYaml . | nindent 16 }}
+                {{- end }}
               {{- end }}
               volumeMounts:
                 - name: config
