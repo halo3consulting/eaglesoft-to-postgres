@@ -5,6 +5,7 @@ Supports full and incremental sync strategies with configurable scheduling
 """
 
 import os
+import sys
 import logging
 import logging.handlers
 import re
@@ -15,7 +16,7 @@ from psycopg2.extras import execute_values
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import click
 from tqdm import tqdm
 from dotenv import load_dotenv
@@ -515,8 +516,8 @@ class DataSync:
             if init_sql:
                 # Intentionally do not log the SQL text to avoid leaking secrets.
                 self.logger.debug("Executing configured Sybase connection_init_sql")
-                cursor = conn.cursor()
-                cursor.execute(init_sql)
+                with closing(conn.cursor()) as cursor:
+                    cursor.execute(init_sql)
                 conn.commit()
 
             yield conn
@@ -560,6 +561,14 @@ class DataSync:
 
         self.logger.info(f"Validating table {table_name} for {strategy} sync...")
 
+        # sqlanydb keeps every cursor (and its prepared statement) alive until
+        # cursor.close() or the connection closes: the connection holds a strong
+        # reference, so going out of scope frees nothing. Validation runs every
+        # table on ONE connection, so an unclosed cursor per table walks into
+        # SQL Anywhere's max_statement_count (50) - "Resource governor for
+        # 'prepared statements' exceeded" (-685) - once the job has enough
+        # tables. That aborted every nightly from 2026-11-21 (41 -> 43 tables).
+        cursor = None
         try:
             cursor = source_conn.cursor()
 
@@ -689,36 +698,40 @@ class DataSync:
                 "warnings": warnings,
             }
 
+        finally:
+            if cursor is not None:
+                cursor.close()
+
     def get_table_columns(self, conn, table_name: str, schema: str) -> List[str]:
         """Get column names for a table"""
         if isinstance(conn, sqlanydb.Connection):
             # Sybase
-            cursor = conn.cursor()
-            cursor.execute(
-                f"""
-                SELECT column_name
-                FROM SYS.SYSTABCOL
-                WHERE table_id = (
-                    SELECT table_id FROM SYS.SYSTAB
-                    WHERE table_name = '{table_name}'
+            with closing(conn.cursor()) as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT column_name
+                    FROM SYS.SYSTABCOL
+                    WHERE table_id = (
+                        SELECT table_id FROM SYS.SYSTAB
+                        WHERE table_name = '{table_name}'
+                    )
+                    ORDER BY column_id
+                """
                 )
-                ORDER BY column_id
-            """
-            )
-            return [row[0] for row in cursor.fetchall()]
+                return [row[0] for row in cursor.fetchall()]
         else:
             # PostgreSQL
-            cursor = conn.cursor()
-            cursor.execute(
-                f"""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = '{schema}'
-                AND table_name = '{table_name}'
-                ORDER BY ordinal_position
-            """
-            )
-            return [row[0] for row in cursor.fetchall()]
+            with closing(conn.cursor()) as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = '{schema}'
+                    AND table_name = '{table_name}'
+                    ORDER BY ordinal_position
+                """
+                )
+                return [row[0] for row in cursor.fetchall()]
 
     def get_primary_key(self, source_conn, table_name: str) -> Optional[str]:
         """Get primary key column(s) from source table (with caching)"""
@@ -727,23 +740,23 @@ class DataSync:
             self.logger.debug(f"Using cached primary key for {table_name}")
             return self._primary_key_cache[table_name]
 
-        # Query database
-        cursor = source_conn.cursor()
-        cursor.execute(
-            f"""
-            SELECT c.column_name
-            FROM SYS.SYSIDX ix
-            JOIN SYS.SYSIDXCOL ic ON ix.table_id = ic.table_id AND ix.index_id = ic.index_id
-            JOIN SYS.SYSTABCOL c ON ic.table_id = c.table_id AND ic.column_id = c.column_id
-            WHERE ix.table_id = (
-                SELECT table_id FROM SYS.SYSTAB WHERE table_name = '{table_name}'
+        # Query database (cursor closed straight away - see validate_table_sync)
+        with closing(source_conn.cursor()) as cursor:
+            cursor.execute(
+                f"""
+                SELECT c.column_name
+                FROM SYS.SYSIDX ix
+                JOIN SYS.SYSIDXCOL ic ON ix.table_id = ic.table_id AND ix.index_id = ic.index_id
+                JOIN SYS.SYSTABCOL c ON ic.table_id = c.table_id AND ic.column_id = c.column_id
+                WHERE ix.table_id = (
+                    SELECT table_id FROM SYS.SYSTAB WHERE table_name = '{table_name}'
+                )
+                AND ix.index_category = 1
+                ORDER BY ic.sequence
+            """
             )
-            AND ix.index_category = 1
-            ORDER BY ic.sequence
-        """
-        )
 
-        pk_columns = [row[0] for row in cursor.fetchall()]
+            pk_columns = [row[0] for row in cursor.fetchall()]
         result = ", ".join(pk_columns) if pk_columns else None
 
         # Cache the result
@@ -1589,6 +1602,10 @@ class DataSync:
                 error_message=f"Validation failed for {len(self.stats['errors'])} table(s)",
             )
 
+            # Nothing was synced. Flag it so main() exits non-zero: a clean
+            # exit here made Kubernetes report the Job as Complete while the
+            # replica went four nights without a nightly sync (2026-11-21..24).
+            self.stats["validation_failed"] = True
             return self.stats
 
         self.logger.info("✓ All tables validated successfully. Starting sync...\n")
@@ -1692,7 +1709,9 @@ def main(config, job, table):
             print(f"Table {table} not found in configuration")
     else:
         # Run sync with optional job filter
-        syncer.run_sync(job_name=job)
+        stats = syncer.run_sync(job_name=job)
+        if stats.get("validation_failed"):
+            sys.exit(1)
 
 
 if __name__ == "__main__":
